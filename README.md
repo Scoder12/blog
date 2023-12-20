@@ -1,0 +1,2 @@
+# blog
+static site generator
