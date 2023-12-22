@@ -15,7 +15,7 @@ where
 {
     source: T,
     state: State,
-    phantomdata: PhantomData<&'a T>,
+    pub frontmatter: Option<Vec<CowStr<'a>>>,
 }
 
 impl<'a, T> FrontmatterExtractor<'a, T>
@@ -26,7 +26,7 @@ where
         Self {
             source: parser,
             state: State::Parsing,
-            phantomdata: PhantomData,
+            frontmatter: None,
         }
     }
 }
@@ -45,17 +45,6 @@ where
             }
         };
 
-        macro_rules! as_expr {
-            ($e:expr) => {
-                $e
-            };
-        }
-        macro_rules! as_pat {
-            ($p:pat) => {
-                $p
-            };
-        }
-
         macro_rules! bail {
             ($item:expr) => {
                 self.state = State::Done;
@@ -63,48 +52,120 @@ where
             };
         }
 
-        /*macro_rules! match_next {
-            ($pattern:pat $(if $guard:expr)? $(,)?) => {
+        // ridiculously overengineered macro (lol)
+        // We need to extract variables from the item by pattern matching
+        // We also need to return the item if the guard fails
+        // We can't return the original item variable, because the assignment partially
+        //  moves out of it
+        // So we have to rebuild the item by evalutating the pattern as an expression
+        // If we bind a macro argument as a pattern (e.g. $pattern:pat), the parser
+        //  will refuse to reparse it as an expression
+        // Therefore, we need to take it as an unmodified token tree
+        // The input tokens are in the format: <pattern tokens> (if <guard tokens>)?
+        // In order to split on "if" without introducing parsing ambiguities, we have to
+        //  recursively munch the input tokens one-by-one, accumulating the pattern until
+        //  we receive an if.
+        // In conclusion, this is so unnecessary complicated to avoid a couple lines of
+        //  repeated code, but it's funny and I learned a lot making it so I'm keeping it :)
+        macro_rules! match_next_helper {
+            ([pattern: $($pattern:tt)*]) => {
                 let item = self.source.next();
-                let Some($pattern) = item else {
-                    self.state = State::Done;
-                    return item;
+                let Some($($pattern)*) = item else {
+                    bail!(item);
                 };
-                {
-                    let g = guh!($pattern);
-                    $(if !$guard {
-                        bail!(g);
-                    };)?
+            };
+            ([pattern: $($pattern:tt)*] if $($tail:tt)*) => {
+                match_next_helper!([pattern: $($pattern)*]);
+
+                if !($($tail)*) {
+                    bail!(Some($($pattern)*));
                 }
             };
-        }*/
-        macro_rules! match_next {
-            ([pattern: $($pattern:tt)* $(if $guard:expr)? $(,)?) => {
-                let item = self.source.next();
-                let Some(as_pat!($($pattern)*)) = item else {
-                    self.state = State::Done;
-                    return item;
-                };
-                {
-                    let g = as_expr!($($pattern)*);
-                    $(if !$guard {
-                        bail!(g);
-                    };)?
-                }
+            ([pattern: $($pattern:tt)*] $tt:tt $($tail:tt)*) => {
+                match_next_helper!([pattern: $($pattern)* $tt] $($tail)*)
             };
-            ($($input:tt)*) => {
-                match_next!([pattern: ] $($input)*)
-            }
         }
 
-        match_next!(Event::Start(Tag::Paragraph));
-        trace_macros!(true);
-        match_next!(Event::Text(s) if s.as_ref() == "+++");
-        trace_macros!(false);
-        let a = Event::Text(s);
-        println!("{:#?}", s);
+        macro_rules! match_next {
+            ($($input:tt)*) => {
+                match_next_helper!([pattern: ] $($input)*)
+            };
+        }
 
+        macro_rules! match_break {
+            () => {
+                match_next!(Event::SoftBreak | Event::HardBreak);
+            };
+        }
+
+        const DELIMITER: &str = "+++";
+        match_next!(Event::Start(Tag::Paragraph));
+        match_next!(Event::Text(s) if s.as_ref() == DELIMITER);
+        let mut lines = Vec::new();
+        loop {
+            match_break!();
+            let item = self.source.next()?;
+            let line = match item {
+                Event::Text(l) => {
+                    if l.as_ref() == DELIMITER {
+                        break;
+                    }
+                    l
+                }
+                item => {
+                    bail!(Some(item));
+                }
+            };
+            lines.push(line);
+        }
+        match_next!(Event::End(Tag::Paragraph));
+
+        self.frontmatter = Some(lines);
         self.state = State::Done;
         return self.source.next();
+    }
+}
+
+mod tests {
+    use pulldown_cmark::Parser;
+
+    use super::FrontmatterExtractor;
+
+    const OUTPUT_NONE: Option<Vec<String>> = None;
+
+    fn testcase(input: impl AsRef<str>, output: Option<Vec<impl AsRef<str>>>) {
+        let mut parser = FrontmatterExtractor::new(Parser::new(input.as_ref()));
+        while let Some(_) = parser.next() {}
+        let actual: Option<Vec<String>> = parser
+            .frontmatter
+            .map(|v| v.into_iter().map(|l| l.as_ref().to_owned()).collect());
+        let expected: Option<Vec<String>> =
+            output.map(|v| v.into_iter().map(|l| l.as_ref().to_owned()).collect());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn basic_parse() {
+        testcase(
+            r#"+++
+a
+b
++++
+
+abcd"#,
+            Some(vec!["a", "b"]),
+        );
+    }
+
+    #[test]
+    fn no_para_end() {
+        testcase(
+            r#"+++
+a
+b
++++
+abcd"#,
+            OUTPUT_NONE,
+        );
     }
 }
