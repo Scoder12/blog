@@ -126,6 +126,7 @@ where
     }
 }
 
+#[cfg(test)]
 mod tests {
     use pulldown_cmark::Parser;
 
