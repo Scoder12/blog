@@ -1,6 +1,4 @@
-use std::marker::PhantomData;
-
-use pulldown_cmark::{CodeBlockKind, CowStr, Event, Tag};
+use pulldown_cmark::{CowStr, Event, Tag};
 
 // inspired by https://github.com/khonsulabs/pulldown-cmark-frontmatter/blob/main/src/lib.rs
 
@@ -28,6 +26,10 @@ where
             state: State::Parsing,
             frontmatter: None,
         }
+    }
+
+    pub fn frontmatter_str(&self) -> Option<String> {
+        self.frontmatter.as_ref().map(|lines| lines.join("\n"))
     }
 }
 
