@@ -1,11 +1,9 @@
 use std::{ffi::OsStr, path::PathBuf};
 
 use color_eyre::eyre::{eyre, Context};
-use frontmatter_extension::FrontmatterExtractor;
+use palm::frontmatter_extension::FrontmatterExtractor;
 use pulldown_cmark::{Options, Parser};
 use serde::Deserialize;
-
-mod frontmatter_extension;
 
 fn new_md_parser<'a, 'callback>(input: &'a str) -> Parser<'a, 'callback> {
     let mut md_options = Options::empty();
