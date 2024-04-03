@@ -13,6 +13,7 @@ where
 {
     source: T,
     state: State,
+    delimiter: &'a str,
     pub frontmatter: Option<Vec<CowStr<'a>>>,
 }
 
@@ -20,12 +21,17 @@ impl<'a, T> FrontmatterExtractor<'a, T>
 where
     T: Iterator<Item = Event<'a>>,
 {
-    pub fn new(parser: T) -> Self {
+    pub fn new_with_delimiter(parser: T, delimiter: &'a str) -> Self {
         Self {
             source: parser,
             state: State::Parsing,
+            delimiter,
             frontmatter: None,
         }
+    }
+
+    pub fn get_delimiter(&self) -> &'a str {
+        self.delimiter
     }
 
     pub fn frontmatter_str(&self) -> Option<String> {
@@ -100,9 +106,8 @@ where
             };
         }
 
-        const DELIMITER: &str = "+++";
         match_next!(Event::Start(Tag::Paragraph));
-        match_next!(Event::Text(s) if s.as_ref() == DELIMITER);
+        match_next!(Event::Text(s) if s.as_ref() == self.delimiter);
         let mut lines = Vec::new();
         loop {
             match_break!();
@@ -113,7 +118,7 @@ where
                     bail!(Some(item));
                 }
             };
-            if line.as_ref() == DELIMITER {
+            if line.as_ref() == self.delimiter {
                 break;
             }
             lines.push(line);
@@ -135,7 +140,8 @@ mod tests {
     const OUTPUT_NONE: Option<Vec<String>> = None;
 
     fn testcase(input: impl AsRef<str>, output: Option<Vec<impl AsRef<str>>>) {
-        let mut parser = FrontmatterExtractor::new(Parser::new(input.as_ref()));
+        let mut parser =
+            FrontmatterExtractor::new_with_delimiter(Parser::new(input.as_ref()), "+++");
         while let Some(_) = parser.next() {}
         let actual: Option<Vec<String>> = parser
             .frontmatter

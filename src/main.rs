@@ -25,7 +25,7 @@ struct PostFrontmatter {
 
 fn render_post(file_path: &PathBuf, input: String) -> color_eyre::Result<String> {
     let parser = new_md_parser(&input);
-    let mut parser = FrontmatterExtractor::new(parser);
+    let mut parser = FrontmatterExtractor::new_with_delimiter(parser, "+++");
     let mut html_buf = String::new();
     pulldown_cmark::html::push_html(&mut html_buf, &mut parser);
     let frontmatter_str = parser.frontmatter_str().ok_or_else(|| {
