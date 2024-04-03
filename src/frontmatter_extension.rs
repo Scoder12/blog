@@ -108,16 +108,14 @@ where
             match_break!();
             let item = self.source.next()?;
             let line = match item {
-                Event::Text(l) => {
-                    if l.as_ref() == DELIMITER {
-                        break;
-                    }
-                    l
-                }
+                Event::Text(l) => l,
                 item => {
                     bail!(Some(item));
                 }
             };
+            if line.as_ref() == DELIMITER {
+                break;
+            }
             lines.push(line);
         }
         match_next!(Event::End(Tag::Paragraph));
