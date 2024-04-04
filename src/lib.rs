@@ -1,6 +1,9 @@
 use std::{ffi::OsStr, fs::File, path::PathBuf};
 
+use color_eyre::eyre::{eyre, Context as EyreContext};
+use frontmatter_extension::FrontmatterExtractor;
 use pulldown_cmark::{Options, Parser};
+use serde::Deserialize;
 
 pub mod frontmatter_extension;
 
@@ -20,26 +23,28 @@ pub enum OutputAction {
 }
 
 // this *could* be a single function pointer instead of a trait implemented on an
-//  empty struct, but this gives room to add state to the handlers in the future
+//  empty struct, but this gives room to add state to the handlers in the future.
+// We use eyre as the error trait here, because the library separation doesn't need to
+//  be *that* complete
 #[enum_dispatch::enum_dispatch]
-pub trait ProcessFile<E> {
+pub trait ProcessFile {
     // caller should remember filename if needed to read()
     fn process_file(
         &self,
         file_path: &PathBuf,
-        read: Box<dyn FnOnce() -> Result<Vec<u8>, E>>,
-    ) -> Result<Vec<OutputAction>, E>;
+        read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+    ) -> color_eyre::Result<Vec<OutputAction>>;
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct CopyHandler;
 
-impl<E> ProcessFile<E> for CopyHandler {
+impl ProcessFile for CopyHandler {
     fn process_file(
         &self,
         _file_path: &PathBuf,
-        _read: Box<dyn FnOnce() -> Result<Vec<u8>, E>>,
-    ) -> Result<Vec<OutputAction>, E> {
+        _read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+    ) -> color_eyre::Result<Vec<OutputAction>> {
         Ok(vec![OutputAction::Copy])
     }
 }
@@ -51,28 +56,81 @@ fn new_md_parser<'a, 'callback>(input: &'a str) -> Parser<'a, 'callback> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PostHandler;
+pub struct GenericMarkdownHandler;
 
-impl<E> ProcessFile<E> for PostHandler {
+impl ProcessFile for GenericMarkdownHandler {
     fn process_file(
         &self,
-        _file_path: &PathBuf,
-        _read: Box<dyn FnOnce() -> Result<Vec<u8>, E>>,
-    ) -> Result<Vec<OutputAction>, E> {
-        todo!()
+        file_path: &PathBuf,
+        read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+    ) -> color_eyre::Result<Vec<OutputAction>> {
+        let input = String::from_utf8(read()?).wrap_err_with(|| {
+            eyre!(
+                "markdown file {} contains invalid utf-8",
+                file_path.to_string_lossy()
+            )
+        })?;
+        let parser = new_md_parser(&input);
+        let mut html_buf = String::new();
+        pulldown_cmark::html::push_html(&mut html_buf, parser);
+        Ok(vec![OutputAction::OutputOther {
+            file_path: file_path.with_extension("html"),
+            contents: html_buf.into(),
+        }])
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct GenericMarkdownHandler;
+#[derive(Debug, Deserialize)]
+struct PostFrontmatter {
+    title: String,
+}
 
-impl<E> ProcessFile<E> for GenericMarkdownHandler {
+#[derive(Clone, Copy, Debug)]
+pub struct PostHandler;
+
+impl PostHandler {
+    const TOML_FRONTMATTER_DELIMITER: &'static str = "+++";
+}
+
+impl ProcessFile for PostHandler {
     fn process_file(
         &self,
-        _file_path: &PathBuf,
-        _read: Box<dyn FnOnce() -> Result<Vec<u8>, E>>,
-    ) -> Result<Vec<OutputAction>, E> {
-        todo!()
+        file_path: &PathBuf,
+        read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+    ) -> color_eyre::Result<Vec<OutputAction>> {
+        let input = String::from_utf8(read()?).wrap_err_with(|| {
+            eyre!(
+                "post file {} contains invalid utf-8",
+                file_path.to_string_lossy()
+            )
+        })?;
+        let parser = new_md_parser(&input);
+        let mut parser = FrontmatterExtractor::new_with_delimiter(
+            parser,
+            PostHandler::TOML_FRONTMATTER_DELIMITER,
+        );
+        let mut html_buf = String::new();
+        pulldown_cmark::html::push_html(&mut html_buf, &mut parser);
+
+        let frontmatter_str = parser.frontmatter_str().ok_or_else(|| {
+            eyre!(
+                "expected post file {} to contain frontmatter",
+                file_path.to_string_lossy()
+            )
+        })?;
+        let frontmatter: PostFrontmatter =
+            toml::from_str(&frontmatter_str).wrap_err_with(|| {
+                eyre!(
+                    "expected frontmatter of post file {} to parse as TOML",
+                    file_path.to_string_lossy()
+                )
+            })?;
+        println!("frontmatter: {:#?}", frontmatter);
+
+        Ok(vec![OutputAction::OutputOther {
+            file_path: file_path.with_extension("html"),
+            contents: html_buf.into(),
+        }])
     }
 }
 
@@ -86,11 +144,11 @@ pub enum FileHandler {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Context {
+pub struct BlogContext {
     posts_dir: PathBuf,
 }
 
-impl Context {
+impl BlogContext {
     pub fn from_default_settings() -> Self {
         Self {
             posts_dir: "posts".into(),
