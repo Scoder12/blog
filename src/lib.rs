@@ -73,7 +73,7 @@ impl ProcessFile for GenericMarkdownHandler {
         let input = String::from_utf8(read()?).wrap_err_with(|| {
             eyre!(
                 "markdown file {} contains invalid utf-8",
-                file_path.to_string_lossy()
+                file_path.display()
             )
         })?;
         let parser = new_md_parser(&input);
@@ -104,12 +104,8 @@ impl ProcessFile for PostHandler {
         file_path: &PathBuf,
         read: ReadFn,
     ) -> color_eyre::Result<Vec<OutputAction>> {
-        let input = String::from_utf8(read()?).wrap_err_with(|| {
-            eyre!(
-                "post file {} contains invalid utf-8",
-                file_path.to_string_lossy()
-            )
-        })?;
+        let input = String::from_utf8(read()?)
+            .wrap_err_with(|| eyre!("post file {} contains invalid utf-8", file_path.display()))?;
         let parser = new_md_parser(&input);
         let mut parser = FrontmatterExtractor::new_with_delimiter(
             parser,
@@ -121,14 +117,14 @@ impl ProcessFile for PostHandler {
         let frontmatter_str = parser.frontmatter_str().ok_or_else(|| {
             eyre!(
                 "expected post file {} to contain frontmatter",
-                file_path.to_string_lossy()
+                file_path.display()
             )
         })?;
         let frontmatter: PostFrontmatter =
             toml::from_str(&frontmatter_str).wrap_err_with(|| {
                 eyre!(
                     "expected frontmatter of post file {} to parse as TOML",
-                    file_path.to_string_lossy()
+                    file_path.display()
                 )
             })?;
         println!("frontmatter: {:#?}", frontmatter);
@@ -232,9 +228,9 @@ impl BlogContext {
                     let prev_path = e.get();
                     return Err(eyre!(
                         "both {} and {} want to write to output path {}",
-                        file_path.to_string_lossy(),
-                        prev_path.to_string_lossy(),
-                        output_path.to_string_lossy()
+                        file_path.display(),
+                        prev_path.display(),
+                        output_path.display()
                     ));
                 }
                 Entry::Vacant(e) => {
