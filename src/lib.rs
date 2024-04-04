@@ -182,9 +182,9 @@ fn to_fs_operation(file_path: &PathBuf, action: OutputAction) -> Option<FsOperat
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlogContext {
-    posts_dir: PathBuf,
+    pub posts_dir: PathBuf,
     // output file => input file
-    written_files: HashMap<PathBuf, PathBuf>,
+    pub written_files: HashMap<PathBuf, PathBuf>,
 }
 
 impl BlogContext {
