@@ -1,4 +1,9 @@
-use std::{ffi::OsStr, fs::File, path::PathBuf};
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    ffi::OsStr,
+    fs::File,
+    path::PathBuf,
+};
 
 use color_eyre::eyre::{eyre, Context as EyreContext};
 use frontmatter_extension::FrontmatterExtractor;
@@ -11,9 +16,8 @@ pub mod frontmatter_extension;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputAction {
-    None,
     Copy,
-    Output(String),
+    Output(Vec<u8>),
     // parent directories should be made if necessary (mkdir -p)
     OutputOther {
         file_path: PathBuf,
@@ -22,17 +26,19 @@ pub enum OutputAction {
     // no way to output an empty directory but I don't think that will be needed
 }
 
+pub type ReadFn = Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>;
+
 // this *could* be a single function pointer instead of a trait implemented on an
 //  empty struct, but this gives room to add state to the handlers in the future.
 // We use eyre as the error trait here, because the library separation doesn't need to
 //  be *that* complete
-#[enum_dispatch::enum_dispatch]
+#[enum_dispatch::enum_dispatch(FileHandler)]
 pub trait ProcessFile {
     // caller should remember filename if needed to read()
     fn process_file(
         &self,
         file_path: &PathBuf,
-        read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+        read: ReadFn,
     ) -> color_eyre::Result<Vec<OutputAction>>;
 }
 
@@ -43,7 +49,7 @@ impl ProcessFile for CopyHandler {
     fn process_file(
         &self,
         _file_path: &PathBuf,
-        _read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+        _read: ReadFn,
     ) -> color_eyre::Result<Vec<OutputAction>> {
         Ok(vec![OutputAction::Copy])
     }
@@ -59,10 +65,10 @@ fn new_md_parser<'a, 'callback>(input: &'a str) -> Parser<'a, 'callback> {
 pub struct GenericMarkdownHandler;
 
 impl ProcessFile for GenericMarkdownHandler {
-    fn process_file(
+    fn process_file<'a>(
         &self,
         file_path: &PathBuf,
-        read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+        read: ReadFn,
     ) -> color_eyre::Result<Vec<OutputAction>> {
         let input = String::from_utf8(read()?).wrap_err_with(|| {
             eyre!(
@@ -96,7 +102,7 @@ impl ProcessFile for PostHandler {
     fn process_file(
         &self,
         file_path: &PathBuf,
-        read: Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>,
+        read: ReadFn,
     ) -> color_eyre::Result<Vec<OutputAction>> {
         let input = String::from_utf8(read()?).wrap_err_with(|| {
             eyre!(
@@ -144,18 +150,56 @@ pub enum FileHandler {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum FsOperation {
+    Copy { from: PathBuf, to: PathBuf },
+    Write { path: PathBuf, contents: Vec<u8> },
+}
+
+impl FsOperation {
+    fn output_path(&self) -> &PathBuf {
+        match self {
+            Self::Copy { from: _, to } => to,
+            Self::Write { path, contents: _ } => path,
+        }
+    }
+}
+
+fn to_fs_operation(file_path: &PathBuf, action: OutputAction) -> Option<FsOperation> {
+    match action {
+        OutputAction::Copy => Some(FsOperation::Copy {
+            from: file_path.clone(),
+            to: file_path.clone(),
+        }),
+        OutputAction::Output(contents) => Some(FsOperation::Write {
+            path: file_path.clone(),
+            contents,
+        }),
+        OutputAction::OutputOther {
+            file_path: output_path,
+            contents,
+        } => Some(FsOperation::Write {
+            path: output_path,
+            contents,
+        }),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlogContext {
     posts_dir: PathBuf,
+    // output file => input file
+    written_files: HashMap<PathBuf, PathBuf>,
 }
 
 impl BlogContext {
     pub fn from_default_settings() -> Self {
         Self {
             posts_dir: "posts".into(),
+            written_files: HashMap::new(),
         }
     }
 
-    pub fn get_handler<E>(&self, file_path: &PathBuf) -> FileHandler {
+    fn get_handler(&self, file_path: &PathBuf) -> FileHandler {
         // None can mean either no extension or a garbage extension.
         let ext = file_path.extension().and_then(OsStr::to_str);
 
@@ -168,5 +212,59 @@ impl BlogContext {
             // if we don't recognize the file, copy it over as is.
             _ => FileHandler::CopyHandler(CopyHandler),
         }
+    }
+
+    pub fn process_file(
+        &mut self,
+        file_path: &PathBuf,
+        read: ReadFn,
+    ) -> color_eyre::Result<Vec<FsOperation>> {
+        let handler = self.get_handler(file_path);
+        let actions = handler.process_file(file_path, read)?;
+        let operations = actions
+            .into_iter()
+            .filter_map(|action| to_fs_operation(file_path, action))
+            .collect::<Vec<_>>();
+        for op in operations.iter() {
+            match self.written_files.entry(op.output_path().clone()) {
+                Entry::Occupied(e) => {
+                    let output_path = e.key();
+                    let prev_path = e.get();
+                    return Err(eyre!(
+                        "both {} and {} want to write to output path {}",
+                        file_path.to_string_lossy(),
+                        prev_path.to_string_lossy(),
+                        output_path.to_string_lossy()
+                    ));
+                }
+                Entry::Vacant(e) => {
+                    e.insert(file_path.clone());
+                }
+            }
+        }
+        Ok(operations)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn duplicate_check() {
+        let mut ctx = BlogContext::from_default_settings();
+        assert_eq!(
+            ctx.process_file(&"a.html".to_owned().into(), Box::new(|| unreachable!()))
+                .map_err(|_| ()),
+            Ok(vec![FsOperation::Copy {
+                from: "a.html".to_owned().into(),
+                to: "a.html".to_owned().into()
+            }])
+        );
+        assert_eq!(
+            ctx.process_file(&"a.md".to_owned().into(), Box::new(|| Ok("# a".into())))
+                .map_err(|e| format!("{}", e)),
+            Err("both a.md and a.html want to write to output path a.html".to_owned())
+        );
     }
 }
