@@ -1,4 +1,4 @@
-use pulldown_cmark::{CowStr, Event, Tag};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag};
 
 // inspired by https://github.com/khonsulabs/pulldown-cmark-frontmatter/blob/main/src/lib.rs
 
@@ -129,6 +129,12 @@ where
         self.state = State::Done;
         return self.source.next();
     }
+}
+
+pub fn new_md_parser<'a, 'callback>(input: &'a str) -> Parser<'a, 'callback> {
+    let mut md_options = Options::empty();
+    md_options.insert(Options::ENABLE_STRIKETHROUGH);
+    Parser::new_ext(input.as_ref(), md_options)
 }
 
 #[cfg(test)]

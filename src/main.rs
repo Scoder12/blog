@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::{eyre, Context};
-use palm::{BlogContext, FsOperation};
+use palm::{ctx::BlogContext, FsOperation};
 
 fn perform_fs_op(
     input_dir: &PathBuf,
