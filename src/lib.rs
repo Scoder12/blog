@@ -1,7 +1,6 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     ffi::OsStr,
-    fs::File,
     path::PathBuf,
 };
 
@@ -26,7 +25,53 @@ pub enum OutputAction {
     // no way to output an empty directory but I don't think that will be needed
 }
 
-pub type ReadFn = Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>>>;
+#[derive(Clone, Debug, PartialEq)]
+pub enum FsOperation {
+    Copy { from: PathBuf, to: PathBuf },
+    Write { path: PathBuf, contents: Vec<u8> },
+}
+
+impl FsOperation {
+    fn output_path(&self) -> &PathBuf {
+        match self {
+            Self::Copy { from: _, to } => to,
+            Self::Write { path, contents: _ } => path,
+        }
+    }
+}
+
+fn to_fs_operation(file_path: &PathBuf, action: OutputAction) -> Option<FsOperation> {
+    match action {
+        OutputAction::Copy => Some(FsOperation::Copy {
+            from: file_path.clone(),
+            to: file_path.clone(),
+        }),
+        OutputAction::Output(contents) => Some(FsOperation::Write {
+            path: file_path.clone(),
+            contents,
+        }),
+        OutputAction::OutputOther {
+            file_path: output_path,
+            contents,
+        } => Some(FsOperation::Write {
+            path: output_path,
+            contents,
+        }),
+    }
+}
+
+// Copy for now, might delete later
+#[enum_dispatch::enum_dispatch(HandleFile)]
+#[derive(Clone, Copy, Debug)]
+pub enum FileHandler {
+    CopyHandler,
+    PostHandler,
+    GenericMarkdownHandler,
+}
+
+// Passing a fallible read callback instead of the file contents allows us to skip
+//  reading the file for no-op or copy only operations.
+pub type ReadFn<'a> = Box<dyn FnOnce() -> color_eyre::Result<Vec<u8>> + 'a>;
 
 // this *could* be a single function pointer instead of a trait implemented on an
 //  empty struct, but this gives room to add state to the handlers in the future.
@@ -136,50 +181,6 @@ impl ProcessFile for PostHandler {
     }
 }
 
-// Copy for now, might delete later
-#[enum_dispatch::enum_dispatch(HandleFile)]
-#[derive(Clone, Copy, Debug)]
-pub enum FileHandler {
-    CopyHandler,
-    PostHandler,
-    GenericMarkdownHandler,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum FsOperation {
-    Copy { from: PathBuf, to: PathBuf },
-    Write { path: PathBuf, contents: Vec<u8> },
-}
-
-impl FsOperation {
-    fn output_path(&self) -> &PathBuf {
-        match self {
-            Self::Copy { from: _, to } => to,
-            Self::Write { path, contents: _ } => path,
-        }
-    }
-}
-
-fn to_fs_operation(file_path: &PathBuf, action: OutputAction) -> Option<FsOperation> {
-    match action {
-        OutputAction::Copy => Some(FsOperation::Copy {
-            from: file_path.clone(),
-            to: file_path.clone(),
-        }),
-        OutputAction::Output(contents) => Some(FsOperation::Write {
-            path: file_path.clone(),
-            contents,
-        }),
-        OutputAction::OutputOther {
-            file_path: output_path,
-            contents,
-        } => Some(FsOperation::Write {
-            path: output_path,
-            contents,
-        }),
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlogContext {
     pub posts_dir: PathBuf,
@@ -210,10 +211,10 @@ impl BlogContext {
         }
     }
 
-    pub fn process_file(
+    pub fn process_file<'a>(
         &mut self,
         file_path: &PathBuf,
-        read: ReadFn,
+        read: ReadFn<'a>,
     ) -> color_eyre::Result<Vec<FsOperation>> {
         let handler = self.get_handler(file_path);
         let actions = handler.process_file(file_path, read)?;
