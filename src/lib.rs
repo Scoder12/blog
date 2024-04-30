@@ -14,18 +14,6 @@ pub mod frontmatter_extension;
 // TODO: maybe use a pure path library like typed-path here
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum OutputAction {
-    Copy,
-    Output(Vec<u8>),
-    // parent directories should be made if necessary (mkdir -p)
-    OutputOther {
-        file_path: PathBuf,
-        contents: Vec<u8>,
-    },
-    // no way to output an empty directory but I don't think that will be needed
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub enum FsOperation {
     Copy { from: PathBuf, to: PathBuf },
     Write { path: PathBuf, contents: Vec<u8> },
@@ -37,26 +25,6 @@ impl FsOperation {
             Self::Copy { from: _, to } => to,
             Self::Write { path, contents: _ } => path,
         }
-    }
-}
-
-fn to_fs_operation(file_path: &PathBuf, action: OutputAction) -> Option<FsOperation> {
-    match action {
-        OutputAction::Copy => Some(FsOperation::Copy {
-            from: file_path.clone(),
-            to: file_path.clone(),
-        }),
-        OutputAction::Output(contents) => Some(FsOperation::Write {
-            path: file_path.clone(),
-            contents,
-        }),
-        OutputAction::OutputOther {
-            file_path: output_path,
-            contents,
-        } => Some(FsOperation::Write {
-            path: output_path,
-            contents,
-        }),
     }
 }
 
@@ -84,7 +52,7 @@ pub trait ProcessFile {
         &self,
         file_path: &PathBuf,
         read: ReadFn,
-    ) -> color_eyre::Result<Vec<OutputAction>>;
+    ) -> color_eyre::Result<Vec<FsOperation>>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,10 +61,13 @@ pub struct CopyHandler;
 impl ProcessFile for CopyHandler {
     fn process_file(
         &self,
-        _file_path: &PathBuf,
+        file_path: &PathBuf,
         _read: ReadFn,
-    ) -> color_eyre::Result<Vec<OutputAction>> {
-        Ok(vec![OutputAction::Copy])
+    ) -> color_eyre::Result<Vec<FsOperation>> {
+        Ok(vec![FsOperation::Copy {
+            from: file_path.to_owned(),
+            to: file_path.to_owned(),
+        }])
     }
 }
 
@@ -114,7 +85,7 @@ impl ProcessFile for GenericMarkdownHandler {
         &self,
         file_path: &PathBuf,
         read: ReadFn,
-    ) -> color_eyre::Result<Vec<OutputAction>> {
+    ) -> color_eyre::Result<Vec<FsOperation>> {
         let input = String::from_utf8(read()?).wrap_err_with(|| {
             eyre!(
                 "markdown file {} contains invalid utf-8",
@@ -124,8 +95,8 @@ impl ProcessFile for GenericMarkdownHandler {
         let parser = new_md_parser(&input);
         let mut html_buf = String::new();
         pulldown_cmark::html::push_html(&mut html_buf, parser);
-        Ok(vec![OutputAction::OutputOther {
-            file_path: file_path.with_extension("html"),
+        Ok(vec![FsOperation::Write {
+            path: file_path.with_extension("html"),
             contents: html_buf.into(),
         }])
     }
@@ -148,7 +119,7 @@ impl ProcessFile for PostHandler {
         &self,
         file_path: &PathBuf,
         read: ReadFn,
-    ) -> color_eyre::Result<Vec<OutputAction>> {
+    ) -> color_eyre::Result<Vec<FsOperation>> {
         let input = String::from_utf8(read()?)
             .wrap_err_with(|| eyre!("post file {} contains invalid utf-8", file_path.display()))?;
         let parser = new_md_parser(&input);
@@ -174,8 +145,8 @@ impl ProcessFile for PostHandler {
             })?;
         println!("frontmatter: {:#?}", frontmatter);
 
-        Ok(vec![OutputAction::OutputOther {
-            file_path: file_path.with_extension("html"),
+        Ok(vec![FsOperation::Write {
+            path: file_path.with_extension("html"),
             contents: html_buf.into(),
         }])
     }
@@ -217,11 +188,7 @@ impl BlogContext {
         read: ReadFn<'a>,
     ) -> color_eyre::Result<Vec<FsOperation>> {
         let handler = self.get_handler(file_path);
-        let actions = handler.process_file(file_path, read)?;
-        let operations = actions
-            .into_iter()
-            .filter_map(|action| to_fs_operation(file_path, action))
-            .collect::<Vec<_>>();
+        let operations = handler.process_file(file_path, read)?;
         for op in operations.iter() {
             match self.written_files.entry(op.output_path().clone()) {
                 Entry::Occupied(e) => {
