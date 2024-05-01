@@ -1,7 +1,11 @@
-use std::path::PathBuf;
+use std::{ffi::OsStr, path::PathBuf};
 
 use color_eyre::eyre::{eyre, Context};
-use palm::{ctx::BlogContext, FsOperation};
+use palm::{
+    ctx::BlogContext,
+    handlers::{copy::CopyHandler, md::GenericMarkdownHandler, post::PostHandler},
+    FileHandler, FsOperation,
+};
 
 fn perform_fs_op(
     input_dir: &PathBuf,
@@ -39,6 +43,18 @@ fn perform_fs_op(
     }
 }
 
+fn get_handler(file_path: &PathBuf) -> FileHandler {
+    if file_path.starts_with("posts/") {
+        return FileHandler::PostHandler(PostHandler);
+    }
+
+    let extension = file_path.extension().and_then(OsStr::to_str);
+    match extension {
+        Some("md") => FileHandler::GenericMarkdownHandler(GenericMarkdownHandler),
+        _ => FileHandler::CopyHandler(CopyHandler),
+    }
+}
+
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
@@ -53,7 +69,9 @@ fn main() -> color_eyre::Result<()> {
     let input_dir = std::path::PathBuf::from(args.get(1).unwrap());
     let output_dir = std::path::PathBuf::from(args.get(2).unwrap());
 
-    let mut blog_ctx = BlogContext::from_default_settings();
+    let mut blog_ctx = BlogContext::builder()
+        .with_get_handler(Box::new(get_handler))
+        .build();
     let mut dirs = vec![input_dir.clone()];
     while !dirs.is_empty() {
         let dir = dirs.remove(0);

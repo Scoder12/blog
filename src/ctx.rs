@@ -1,44 +1,23 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
-    ffi::OsStr,
     path::PathBuf,
 };
 
 use color_eyre::eyre::eyre;
 
-use crate::{
-    handlers::{copy::CopyHandler, md::GenericMarkdownHandler, post::PostHandler},
-    FileHandler, FsOperation, ProcessFile, ReadFn,
-};
+use crate::{handlers::copy::CopyHandler, FileHandler, FsOperation, ProcessFile, ReadFn};
 
-#[derive(Clone, Debug, PartialEq)]
 pub struct BlogContext {
-    pub posts_dir: PathBuf,
+    // -- config --
+    pub get_handler: Box<dyn Fn(&PathBuf) -> FileHandler>,
+    // -- state --
     // output file => input file
     pub written_files: HashMap<PathBuf, PathBuf>,
 }
 
 impl BlogContext {
-    pub fn from_default_settings() -> Self {
-        Self {
-            posts_dir: "posts".into(),
-            written_files: HashMap::new(),
-        }
-    }
-
-    fn get_handler(&self, file_path: &PathBuf) -> FileHandler {
-        // None can mean either no extension or a garbage extension.
-        let ext = file_path.extension().and_then(OsStr::to_str);
-
-        match ext {
-            Some("md") if file_path.starts_with(&self.posts_dir) => {
-                FileHandler::PostHandler(PostHandler)
-            }
-            Some("md") => FileHandler::GenericMarkdownHandler(GenericMarkdownHandler),
-
-            // if we don't recognize the file, copy it over as is.
-            _ => FileHandler::CopyHandler(CopyHandler),
-        }
+    pub fn builder() -> BlogContextBuilder {
+        BlogContextBuilder::default()
     }
 
     pub fn process_file<'a>(
@@ -46,7 +25,7 @@ impl BlogContext {
         file_path: &PathBuf,
         read: ReadFn<'a>,
     ) -> color_eyre::Result<Vec<FsOperation>> {
-        let handler = self.get_handler(file_path);
+        let handler = (self.get_handler)(file_path);
         let operations = handler.process_file(file_path, read)?;
         for op in operations.iter() {
             match self.written_files.entry(op.output_path().clone()) {
@@ -69,6 +48,34 @@ impl BlogContext {
     }
 }
 
+#[derive(Default)]
+pub struct BlogContextBuilder {
+    get_handler: Option<Box<dyn Fn(&PathBuf) -> FileHandler>>,
+}
+
+impl BlogContextBuilder {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn with_get_handler(self, get_handler: Box<dyn Fn(&PathBuf) -> FileHandler>) -> Self {
+        Self {
+            get_handler: Some(get_handler),
+            ..self
+        }
+    }
+
+    pub fn build(self) -> BlogContext {
+        BlogContext {
+            get_handler: self
+                .get_handler
+                .unwrap_or_else(|| Box::new(|_path| FileHandler::CopyHandler(CopyHandler))),
+            // -- state --
+            written_files: HashMap::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::FsOperation;
@@ -77,7 +84,7 @@ mod test {
 
     #[test]
     fn duplicate_check() {
-        let mut ctx = BlogContext::from_default_settings();
+        let mut ctx = BlogContext::builder().build();
         assert_eq!(
             ctx.process_file(&"a.html".to_owned().into(), Box::new(|| unreachable!()))
                 .map_err(|_| ()),
