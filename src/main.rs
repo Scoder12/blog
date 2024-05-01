@@ -12,6 +12,10 @@ fn perform_fs_op(
         FsOperation::Copy { from, to } => {
             let abs_from = input_dir.join(&from);
             let abs_to = output_dir.join(&to);
+            let parent_dir = abs_to.parent().expect("output_dir should not be empty");
+            std::fs::create_dir_all(parent_dir)
+                .wrap_err_with(|| eyre!("creating directory {} failed", parent_dir.display()))?;
+
             println!("copy {} to {}", abs_from.display(), abs_to.display());
             Ok(std::fs::copy(&abs_from, &abs_to)
                 .wrap_err_with(|| {
@@ -25,6 +29,9 @@ fn perform_fs_op(
         }
         FsOperation::Write { path, contents } => {
             let abs_path = output_dir.join(&path);
+            let parent_dir = abs_path.parent().expect("output_dir should not be empty");
+            std::fs::create_dir_all(parent_dir)
+                .wrap_err_with(|| eyre!("creating directory {} failed", parent_dir.display()))?;
             std::fs::write(&abs_path, contents)
                 .wrap_err_with(|| eyre!("writing to {} failed", abs_path.display()))
                 .map_err(|e| e.into())
