@@ -13,7 +13,7 @@ pub enum FsOperation {
 }
 
 impl FsOperation {
-    fn output_path(&self) -> &PathBuf {
+    pub fn output_path(&self) -> &PathBuf {
         match self {
             Self::Copy { from: _, to } => to,
             Self::Write { path, contents: _ } => path,
